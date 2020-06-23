@@ -1,0 +1,119 @@
+<?php
+// $id$
+/**
+ * @file booklet.install
+ * Contains install and update functions for booklet.
+ *
+ *
+ *  Sample booklet table:
+ *
+ *  nid | booklet_nid | weight
+ *  2     2                0
+ *  3     2                1
+ *  4     2                2
+ *  5     2                3
+ *  7     7                0
+ *
+ *  This defines two booklets.   Node 1 is an anchor node for a booklet with 1 node: itself.
+ *  Node 2 is the anchor for a booklet with 4 nodes: 2, 3, 4, and 5 in that order. 
+ *
+ *  - *All* nodes of a type defined by the administrator to be a booklet type will 
+ *    have entries (nid) in this table, as they are in a booklet even if the booklet
+ *    holds only one node: itself.
+    - A node that is the first in a booklet, or the only node in a booklet is an 'anchor'.
+ *  - All nodes that are anchors have weight 0, and any other nodes in their booklet have weight > 0,
+ *    since the anchor is always the first node in the booklet.  All nodes that have weight 0 are anchors.
+ *
+ *  Sample booklet_count table:
+ *
+ *  booklet_nid | count
+ *  2                4
+ *  6                1
+ *
+ *  The booklet_count holds a count the number of nodes in a booklet.
+ *  
+ */
+
+
+/**
+ * Implementation of hook_schema().
+ */
+function booklet_schema() {
+  $schema['booklet'] = array(
+    'description' => 'Contains the list of nodes and their accociated anchor node (first node in Booklet).',
+    'fields' => array(
+      'nid' => array(
+        'description' => 'The nid of the main node.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'booklet_nid' => array(
+        'description' => 'The nid of the booklet this node is part of.  Same as nid if sold item.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'weight' => array(
+        'description' => 'The weight within the booklet.  0 if nid defines the booklet',
+        'type' => 'int',
+        'unsigned' => FALSE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+    ),
+    'primary key' => array('nid'),
+    'indexes' => array(
+      'booklet_nid' => array('booklet_nid'),
+      'weight' => array('weight'),
+    ),
+  );
+
+  $schema['booklet_count'] = array(
+    'description' => 'Contains the list of Booklet anchors with their node counts.',
+    'fields' => array(
+      'booklet_nid' => array(
+        'description' => 'The nid of the booklet anchor node.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'count' => array(
+        'description' => 'The number of nodes in the booklet',
+        'type' => 'int',
+        'unsigned' => FALSE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+    ),
+    'primary key' => array('booklet_nid'),
+  );
+
+  return $schema;
+}
+
+
+/**
+ * Implementation of hook_install().
+ */
+function booklet_install() {
+  drupal_install_schema('booklet');
+}
+
+
+/**
+ * Implementation of hook_uninstall().
+ */
+function booklet_uninstall() {
+  drupal_uninstall_schema('booklet');
+  variable_del('booklet_delete_all');
+  variable_del('booklet_fix_anchor');
+  variable_del('booklet_rebuild_aliases');
+  variable_del('booklet_ui_add');
+  variable_del('booklet_ui_toc');
+  foreach (node_get_types('names') as $type_name) {
+    variable_del("booklet_enabled_$type_name");
+  }
+}
+

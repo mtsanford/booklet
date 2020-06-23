@@ -1,0 +1,5 @@
+; $Id$
+name = Booklet
+package = "Other"
+description = "Allows new nodes to be added to existing nodes to form a booklet (a flat list of nodes), providing easy navigation, and easy workflow for content creators."
+core = 6.x

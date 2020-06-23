@@ -1,0 +1,44 @@
+/* $Id$  */
+
+.booklet-items {
+  border-top: 1px solid #888;
+  padding: 1em 0 0 3em;
+}
+.booklet-navigation {
+  margin:1em 0;
+  clear:both;
+}
+.booklet-navigation .page-links {
+  border-top: 1px solid #888;
+  border-bottom: 1px solid #888;
+  text-align: center;
+  padding:0 0.2em 0.4em;
+}
+.booklet-navigation .left-block {
+  float: left;
+  text-align:left;
+}
+.booklet-navigation .right-block {
+  float: right;
+  text-align:right;
+}
+.booklet-navigation .nav-block {
+  width: 40%;
+  display: block;
+  padding:4px;
+  margin:2px;
+}
+.booklet-navigation .link-label {
+  margin:0px 4px;
+}
+.booklet-navigation .link-title {
+  font-size:80%;
+  margin:0px 4px;
+  line-height:1em;
+}
+.booklet-navigation a, booklet-navigation a:link {
+  text-decoration:none;
+}
+.booklet-navigation a:hover {
+  text-decoration:underline;
+}

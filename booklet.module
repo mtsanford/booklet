@@ -1,0 +1,802 @@
+<?php
+// $Id$
+/**
+ * @file
+ *
+ * Allows nodes to be assembled into simple linear lists, much
+ * like a core book can create a hierarchy of nodes.  Emphasis
+ * is on simple workflow with no 'parent'/'weight' selection lists.
+ *
+ * see admin/help#booklet
+ *
+ * @author Mark Sanford http://drupal.org/user/191578
+ *
+ */
+
+ 
+/**
+* Implementation of hook_perm()
+*/
+function booklet_perm() {
+  return array(
+    'administer booklet',   // access booklet admin settings
+  );
+}
+
+ 
+/**
+ * Implementation of hook_menu()
+ */
+function booklet_menu() {
+  $items['node/%booklet_wildcard/arrange-booklet'] = array(
+    'title' => 'Arrange',
+    'page callback' => 'booklet_page_items',
+    'page arguments' => array(1),
+    'access callback' => 'booklet_items_access',
+    'access arguments' => array(1),
+    'weight' => 2,
+    'file' => 'booklet.pages.inc',
+    'type' => MENU_LOCAL_TASK,
+  );
+  // Our own custom node delete form.  We change submit function for
+  // node delete button to redirect to this page.  See booklet_form_alter()
+  $items['node/%node/delete-booklet'] = array(
+    'title' => 'Delete booklet',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('booklet_delete_confirm', 1),
+    'access callback' => 'node_access',
+    'access arguments' => array('delete', 1),
+    'file' => 'booklet.pages.inc',
+    'weight' => 1,
+    'type' => MENU_CALLBACK
+  );
+  $items['admin/content/booklet-settings'] = array(
+    'title' => 'Booklet settings',
+    'description' => 'Set up behaviors and user interface settings for booklets.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('booklet_settings'),
+    'access arguments' => array('administer booklet'),
+    'file' => 'booklet.admin.inc',
+  );
+  return $items;
+}
+
+
+/*
+ *   Menu item wildcard loader callback for "Arrange" tab
+ *   Return FALSE if the arrange tab is unavailable for the node.
+ */
+function booklet_wildcard_load($nid) {
+  $node = node_load($nid);
+  $min_for_arrange = variable_get('booklet_fix_anchor', 0) ? 3 : 2;
+  return ($node && !empty($node->booklet) && $node->booklet['isanchor'] && $node->booklet['numitems'] >= $min_for_arrange)  ? $node : FALSE;
+}
+
+
+/*
+ *  Menu item access callback
+ *  Determine if the current user has permission to arrange the items
+ */
+function booklet_items_access($node) {
+  return empty($node->booklet['booklet']) ? FALSE : node_access('update', node_load($node->booklet['booklet']));
+}
+
+
+/**
+ * Implementation of hook_nodeapi().
+ */
+function booklet_nodeapi(&$node, $op, $teaser = FALSE, $page = FALSE) {
+  switch ($op) {
+    case 'load':
+      $output['booklet'] = booklet_load_booklet_data($node);
+      return $output;
+    case 'insert':
+      // on initial node creation, when inserting into a booklet, add it at the
+      // end of the list of items.
+      if (!empty($node->booklet)) {
+        if ($node->booklet['booklet'] ) {
+          // inserting into an existing booklet
+          $weight = db_result(db_query('SELECT MAX(weight) FROM {booklet} WHERE booklet_nid = %d', $node->booklet['booklet']));
+          $node->booklet['weight'] = $weight + 1;
+          db_query('UPDATE {booklet_count} SET count = count+1 WHERE booklet_nid = %d', $node->booklet['booklet']);
+        }
+        else {
+          // making a new 1 node booklet
+          $node->booklet['booklet'] = $node->nid;
+          $node->booklet['weight'] = 0;
+          db_query('INSERT INTO {booklet_count} (booklet_nid, count) VALUES (%d, 1)', $node->nid);
+        }
+        db_query('INSERT INTO {booklet} (nid, booklet_nid, weight) VALUES (%d, %d, %d)', $node->nid, $node->booklet['booklet'], $node->booklet['weight']);
+      }
+      else {
+        // some other process is creating the node, and not going through 'prepare'
+        if (_booklet_enabled($node)) {
+          db_query('INSERT INTO {booklet_count} (booklet_nid, count) VALUES (%d, 1)', $node->nid);
+          db_query('INSERT INTO {booklet} (nid, booklet_nid, weight) VALUES (%d, %d, 0)', $node->nid, $node->nid);
+        }
+      }
+      break;
+    case 'update':
+      // Booklet and weight fields are not accessbile on the node edit page.  Nothing to do.
+      break;
+    case 'prepare':
+      // For the node add form, add data that specifies the booklet the node is being added
+      // to, and whether it's a new first page (isanchor).  We check ?booklet=XXX from the uri.  
+      // If it's the nid of a first page of a booklet, and the user has update permission on
+      // that node, we'll inject the booklet nid into the form, so that it's added to that
+      // booklet on submit.  ( see booklet_form_alter() )
+      if (empty($node->nid) && _booklet_enabled($node)) {
+        $node->booklet['booklet'] = 0;
+        $node->booklet['isanchor'] = TRUE;
+        if (isset($_GET['booklet']) && is_numeric($_GET['booklet'])) {
+          $booklet_node = node_load($_GET['booklet']);
+          if (node_access('update', $booklet_node) == TRUE && $booklet_node->booklet['isanchor'] == TRUE) {
+            $node->booklet['booklet'] = $_GET['booklet'];
+            $node->booklet['isanchor'] = FALSE;
+          }
+        }
+      }
+      break;
+    case 'view':
+      if (!$teaser && $node->build_mode == NODE_BUILD_NORMAL && !empty($node->booklet)) {
+        drupal_add_css(drupal_get_path('module', 'booklet') .'/booklet.css');
+        $node->content['booklet_navigation'] = array(
+            '#value' => theme('booklet_navigation', $node),
+            '#weight' => 100,
+          );
+          $title = $node->booklet['items'][0]['title'];
+          if (!$node->booklet['isanchor'] && $title) {
+            drupal_set_breadcrumb(array(l(t('Home'), NULL), l($title, 'node/'. $node->booklet['booklet'])));
+          }
+      }
+      break;
+    case 'delete':
+      // static variable to so that we can ignore hook_nodeapi callbacks
+      // if they are being caused by the booklet_delete_all feature below.
+      static $currently_deleting = 0; 
+      
+      if (empty($node->booklet) || $currently_deleting == $node->nid) {
+        break; // out of switch statement
+      }
+
+      // "Delete All Nodes in Booklet" feature
+      if (variable_get('booklet_delete_all', 0) && $node->booklet['isanchor']) {
+        foreach ($node->booklet['items'] as $item) {
+          if ($item['nid'] != $node->nid) {
+            $currently_deleting = $item['nid'];
+            node_delete($item['nid']);
+            $currently_deleting = 0;
+          }
+        }
+        // clean out all the node booklet data for this booklet.  
+        db_query('DELETE FROM {booklet} WHERE booklet_nid = %d', $node->nid);
+        db_query('DELETE FROM {booklet_count} WHERE booklet_nid = %d', $node->nid); 
+        
+        // If some nodes were not deleted (e.g. user has no delete permission), then now
+        // we will make them into anchor nodes of their own new node booklet.
+        // Don't use db_rewrite_sql, because we don't care about access, we just care
+        // about ensuring there are matching entries in the node booklet tables
+        $orphans = db_query('SELECT nid FROM {node} WHERE nid IN (' . implode(',', $node->booklet['nids']) . ')');
+        while ($nid = db_result($orphans)) {
+            $title = booklet_get_node_title($node, $nid);
+            if ($title) {
+              drupal_set_message(t('%name could not be deleted.', array('%name' => $title)));
+            }
+            db_query('INSERT INTO {booklet} (nid, booklet_nid, weight) VALUES (%d, %d, 0)', $nid, $nid);
+            db_query('INSERT INTO {booklet_count} (booklet_nid, count) VALUES (%d, 1)', $nid);
+        }
+      }
+      
+      // normal delete
+      else {
+        db_query('DELETE FROM {booklet} WHERE nid = %d', $node->nid);
+
+        if ($node->booklet['numitems'] == 1) {
+          db_query('DELETE FROM {booklet_count} WHERE booklet_nid = %d', $node->nid); 
+        }
+        else {
+          // make an array that booklet_normalize_weights can act on
+          $new_weights = array_flip($node->booklet['nids']);
+          unset($new_weights[$node->nid]);
+          $new_anchor = booklet_normalize_weights($new_weights);
+
+          // Anchor can change, so need to update booklet_nid in both tables
+          foreach ($new_weights as $nid => $weight) {
+            db_query('UPDATE {booklet} SET weight=%d, booklet_nid = %d WHERE nid=%d', $weight, $new_anchor, $nid);
+          }
+          db_query('UPDATE {booklet_count} SET booklet_nid=%d, count=%d WHERE booklet_nid = %d', $new_anchor, $node->booklet['numitems'] - 1, $node->booklet['booklet']);
+          booklet_load_booklet_data(FALSE);   // cached data is no longer valid
+          booklet_rebuild_aliases(array_keys($new_weights));
+        }
+      }
+
+      break;
+  }
+}
+
+
+/*
+ * Get booklet information for a node
+ *
+ * For nodes with booklet enabled, this array will be returned:
+ *
+ * array(
+ *   'isanchor' =>         bool indicating this node is the first node in the booklet
+ *   'booklet' =>          the nid if the booklet anchor
+ *   'weight' =>           the weight within booklet of this node
+ *   'index' =>            the index within ['items'] of this node, e.g. 0,1,2...
+ *   'numitems' =>         the number of items in the booklet.
+ *   'items' => array(     the items in the booklet.
+ *     0 => array (        e.g. info on the first item in booklet.  (always set)
+ *       'nid' =>          e.g. nid of first item
+ *       'title' =>        e.g. title of first item, or NULL if user has no view access
+ *     ),
+ *     1 => array (        e.g. info on the second item in booklet.
+ *       'nid' =>          e.g. nid of second item
+ *       'title' =>        e.g. title of second item, or NULL if user has no view access
+ *     ),
+ *     .... etc ....
+ *   )
+ *   'nids' => array(      A shadow table of nids in the booklet for use in implode()
+ *     '0' =>              e.g. The nid of the first item = array['items'][0]['nid']
+ *     '1' =>              e.g. The nid of the second item = array['items'][1]['nid']
+ *     .... etc ....
+ *    ),
+ *  )
+ *
+ * NOTE: A weight of 0 implies that it is the anchor (top) node.  This should be maintained on any operations
+ *   done to the booklets, such as rearranging, deletion, etc.
+ * NOTE: All stored titles are raw, and should be run throught check_plain() at some point
+ *
+ *   parameter: $node   The node for which to return booklet information
+ *                      Iff FALSE will clear the cache
+ *   returns:           An array as described above
+ *
+ */
+function booklet_load_booklet_data($node) {
+  global $user;
+  static $cached_data = array();  // previously loaded booklet info, indexed on booklet_nid
+  
+  if ($node === FALSE) {
+    $cached_data = array();
+    return;
+  }
+  
+  if (empty($node->nid)  ||  !_booklet_enabled($node)) {
+    return NULL;
+  }
+  
+  $booklet_info = db_fetch_array(db_query('SELECT booklet_nid, weight FROM {booklet} WHERE nid = %d', $node->nid));
+  if (empty($booklet_info)) {
+    return NULL;
+  }
+  
+  // See if cached data exist for this booklet, and if so use it  
+  if (!empty($cached_data[$booklet_info['booklet_nid']])) {
+    $info = $cached_data[$booklet_info['booklet_nid']];
+    $info['isanchor'] = ($booklet_info['booklet_nid'] == $node->nid);
+    $info['weight'] = $booklet_info['weight'];
+    $info['index'] = array_search($node->nid, $info['nids']);
+    return $info;
+  }
+  
+  $info = array();
+  $info['isanchor'] = ($booklet_info['booklet_nid'] == $node->nid);
+  $info['booklet'] = $booklet_info['booklet_nid'];
+  $info['weight'] = $booklet_info['weight'];
+  $info['items'] = array();
+  $info['nids'] = array();
+  $result = db_query('SELECT nid FROM {booklet} WHERE booklet_nid = %d ORDER BY weight ASC', $booklet_info['booklet_nid']);
+  $index = 0;
+  while ($item_nid = db_result($result)) {
+    $info['items'][$index] = array();
+    $info['items'][$index]['nid'] = $item_nid;
+    $info['items'][$index]['title'] = NULL;
+    $info['nids'][$index] = $item_nid;
+    if ($item_nid == $node->nid) {
+      $info['index'] = $index;
+    }
+    $index++;
+  }
+  $info['numitems'] = count($info['items']);
+
+  // Now fill in $info['items'][]['title] with node titles w/o expensive node_load() call
+  // Leave as NULL if user has no view access on the node
+  $nodes = '(' . implode(',', $info['nids']) . ')';
+  $result = db_query(db_rewrite_sql('SELECT n.nid AS nid, n.title AS title, n.type AS type, n.status AS status, n.uid AS uid FROM {node} n WHERE n.nid IN ' . $nodes));
+  while ($node = db_fetch_object($result)) {
+    $set_title = FALSE;
+    // find the index into $info['items']
+    $items_key = -1;
+    foreach ($info['items'] as $key => $value) {
+      if ($value['nid'] == $node->nid) {
+        $items_key = $key;
+      }
+    }
+    if ($items_key != -1) {
+      // Users *DO* have view access to their own unpublished nodes (see node_access())
+      // Normal core menu links to unpublished nodes are not shown, even though the user
+      // has 'view' access.  This is inconsistent, but done for performance reasons.
+      // ( see menu_tree_check_access() ) In our case we *DO* want to show links so that users
+      // can see the booklet navigation, and 'arrange' table for their unpublished content.
+      if ( $node->status || ($node->uid == $user->uid) ) {
+        $set_title = TRUE;
+      }
+      else {
+        // See README.txt for explaination of HOOK_booklet_show_unpublished_node_link($node).  This allows
+        // modules to grant access to see node links in certain circumstances, for example if
+        // the user has an 'editor' role, or if the administrator is using something like workflow module.
+        $grants = module_invoke_all('booklet_show_unpublished_node_link', $node);
+        foreach ($grants as $grant) {
+          if ($grant) {
+            $set_title = TRUE;
+          }
+        } 
+      }
+      if ($set_title) {
+        $info['items'][$items_key]['title'] = $node->title;
+      }
+    }
+  }
+  
+  $cached_data[$booklet_info['booklet_nid']] = $info;
+  return $info;
+
+}
+
+
+/**
+ * Implementation of hook_block().
+ */
+function booklet_block($op, $delta = 0, $edit = array()) {
+  switch ($op) {
+    case 'list':
+      return array(
+        0 => array(
+          'info' => t('Booklet navigation block'),
+          'cache' => BLOCK_CACHE_PER_PAGE,
+        ),
+      );
+      break;
+    case 'configure':
+      break;
+    case 'save':
+      break;
+    case 'view':
+      if ($delta == 0) {
+          $node = menu_get_object();
+          if ($node && arg(2) != 'edit' && !empty($node->booklet) && $node->booklet['numitems'] > 1) {
+            $block['subject'] = t('In This Section');
+            foreach ($node->booklet['items'] as $item) {
+              if ($item['title']) {
+                $links[] = l($item['title'], 'node/'. $item['nid']);
+              }
+            }
+            $block['content'] = count($links) ? theme('booklet_block', $links) : '';
+            return $block;
+          }
+      }
+      break;      
+  }
+}
+
+
+/**
+ *  Implementation of hook_link()
+ */
+function booklet_link($type, $object, $teaser = FALSE) {
+  if ($type == 'node' && $teaser == FALSE) {
+    $types = node_get_types();
+    $links = NULL;
+    
+    if (variable_get('booklet_ui_add', 1)) {
+      if (_booklet_enabled($object) && node_access('create', $object->type)) {
+         $booklet = node_load($object->booklet['booklet']);
+         if (node_access('update', $booklet)) {
+          $type_url_str = str_replace('_', '-', $object->type);
+          $item_type_name = $types[$object->type]->name;
+          $links['booklet_add_child'] = array(
+            'title' => t('Append new @type', array('@type' => $item_type_name)),
+            'href' => 'node/add/' . $type_url_str,
+            'query' => 'booklet=' . $object->booklet['booklet'],
+            'attributes' => array('title' => t('Add a new @itemtype', array('@itemtype' => $item_type_name))),
+          );
+        }
+      }
+    }
+    
+    return $links;
+  }
+}
+
+/**
+ * Implementation of hook_theme().
+ */
+function booklet_theme() {
+  return array(
+    'booklet_items_form' => array(
+      'arguments' => array('form' => NULL),
+    ),
+    'booklet_navigation' => array(
+      'arguments' => array('node' => NULL),
+      'template' => 'booklet-navigation',
+    ),
+    'booklet_navigation_prev_link' => array(
+      'arguments' => array('nid' => NULL, 'title' => ''),
+    ),
+    'booklet_navigation_next_link' => array(
+      'arguments' => array('nid' => NULL, 'title' => ''),
+    ),
+    'booklet_block' => array(
+      'arguments' => array('links' => array()),
+      'template' => 'booklet-block',
+    ),
+  );
+}
+
+
+function template_preprocess_booklet_navigation(&$vars) {
+  $node = $vars['node'];
+  
+  // create $items for booklet nodes  
+  if ($node->booklet['isanchor'] && $node->booklet['numitems'] > 1 && variable_get('booklet_ui_toc', 1)) {
+    foreach ($node->booklet['items'] as $item) {
+      if ($item['title']) {
+        $links[$item['nid']] = array(
+          'href'       => 'node/' . $item['nid'],
+          'title'      => $item['title'],
+        );
+      }
+    }
+    if (count($links)) {
+      $vars['items'] = theme('links', $links, $attributes = array('class' => 'booklet-item-links'));
+    }
+  }
+  
+  // figure out which item is prev & next
+  // were going to look below because some items
+  // may not be accessible to user, so don't want
+  // to show link.
+  if ($node->booklet['isanchor']) {
+    $prev_index = -1; // no previous possible
+    $next_index = 1; // 'next' item is first item in booklet
+  }
+  else {
+    $prev_index = $node->booklet['index'] - 1;
+    $next_index = $node->booklet['index'] + 1;
+  }
+
+  // $prev_index is already set
+  for (; $prev_index>= 0; $prev_index--) {
+    if ($node->booklet['items'][$prev_index]['title']) {
+      $vars['prev_link'] = theme('booklet_navigation_prev_link', $node->booklet['items'][$prev_index]['nid'], $node->booklet['items'][$prev_index]['title']);
+      break;
+    }
+  }
+  
+  // $next_index is already set
+  for (; $next_index < $node->booklet['numitems']; $next_index++) {
+    if ($node->booklet['items'][$next_index]['title']) {
+      $vars['next_link'] = theme('booklet_navigation_next_link', $node->booklet['items'][$next_index]['nid'], $node->booklet['items'][$next_index]['title']);
+      break;
+    }
+  }
+  
+  if ($vars['prev_link'] || $vars['next_link']) {
+    $vars['has_links'] = TRUE;
+  }
+}
+
+
+function theme_booklet_navigation_prev_link($nid, $title) {
+
+  $link_1 = l(t('Previous Page'), 'node/' . $nid);
+  $link_2 = l($title, 'node/' . $nid);
+
+$link_html = <<<EOL
+<div class="left-block nav-block">
+  <div class="left-block">&laquo;</div>
+  <div class="left-block">
+    <div class="link-label">$link_1</div>
+    <div class="link-title">$link_2</div>
+  </div>
+</div>
+EOL;
+
+  return $link_html;
+}
+
+
+function theme_booklet_navigation_next_link($nid, $title) {
+
+  $link_1 = l(t('Next Page'), 'node/' . $nid);
+  $link_2 = l($title, 'node/' . $nid);
+
+$link_html = <<<EOL
+<div class="right-block nav-block">
+  <div class="right-block">&raquo;</div>
+  <div class="right-block">
+    <div class="link-label">$link_1</div>
+    <div class="link-title">$link_2</div>
+  </div>
+</div>
+EOL;
+
+  return $link_html;
+}
+
+
+
+/*
+ *  implementation of hook_form_alter()
+ */
+function booklet_form_alter(&$form, $form_state, $form_id) {
+  // For items that are being added to a booklet, or are already in a booklet,
+  // put the values into the form
+  if ($form['#id'] == 'node-form'  && !empty($form['#node']->booklet)) {
+    $booklet = empty($form['#node']->booklet['booklet']) ? 0 : $form['#node']->booklet['booklet'];
+    $weight = empty($form['#node']->booklet['weight']) ? 0 : $form['#node']->booklet['weight'];
+    $form['booklet'] = array(
+      '#tree' => TRUE,
+    );
+    $form['booklet']['booklet'] = array(
+      '#type' => 'value',
+      '#value' => $booklet,
+    );
+    $form['booklet']['weight'] = array(
+      '#type' => 'value',
+      '#value' => $weight,
+    );
+    // If this is a new node, change the title to reflect that we're adding
+    // to an existing booklet.
+    if (empty($form['#node']->nid) && $booklet != 0) {
+      $booklet_title = booklet_get_node_title($form['#node'], $booklet);
+      if (!$booklet_title) {
+        $booklet_title = t('booklet');
+      }
+      $type = str_replace('-', '_', $form['#node']->type);
+      $types = node_get_types();
+      if (isset($types[$type])) {
+        drupal_set_title(t('Append new @type to %name', array('@type' => $types[$type]->name, '%name' => $booklet_title)));
+      }
+    }
+    
+    // If this is an anchor, and fixed anchors are enfored, change the delete confirmation page
+    if (variable_get('booklet_delete_all', 0) && !empty($form['buttons']['delete'])) {
+      $count = db_result(db_query('SELECT c.count FROM {booklet} nc INNER JOIN {booklet_count} c ON nc.nid = c.booklet_nid WHERE nc.nid = %d'
+        , $form['#node']->nid));  // returns NULL if not an anchor
+      if ($count > 1) {
+        $form['buttons']['delete']['#submit'] = array('booklet_form_delete_submit');
+      }
+    }
+    
+  }
+}
+
+/**
+ * Button sumit function: handle the 'Delete' button on the node form.
+ * Only if enforcing fixed anchors
+ */
+function booklet_form_delete_submit($form, &$form_state) {
+  $destination = '';
+  if (isset($_REQUEST['destination'])) {
+    $destination = drupal_get_destination();
+    unset($_REQUEST['destination']);
+  }
+  $node = $form['#node'];
+  $form_state['redirect'] = array('node/'. $node->nid .'/delete-booklet', $destination);
+}
+
+
+/**
+ * Implementation of hook_form_alter().
+ * Show the enabled/diabled option on the node type form
+ */
+function booklet_form_node_type_form_alter(&$form, &$form_state) {
+    if (isset($form['identity']['type'])) {
+      $form['workflow']['booklet_enabled'] = array(
+        '#type' => 'radios',
+        '#title' => t('Booklet'),
+        '#default_value' => variable_get('booklet_enabled_'. $form['#node_type']->type, 0),
+        '#options' => array(t('Disabled'), t('Enabled')),
+        '#description' => t('Enable content creators to make multi-page booklets of this node type.') 
+           . t(' <strong>CAUTION!</strong> Disabling this feature if it\'s enabled will cause all booklet data to be lost, causing all nodes of this type to become stand-alone nodes.'),
+      );
+    // make our submit function first, so we can check against old variables before they are saved by core from the form
+    array_unshift($form['#submit'], 'booklet_node_type_form_submit');
+    }
+}
+
+/*
+ * submit callback for node type form
+ */
+function booklet_node_type_form_submit($form_id, $form_state) {
+  // Populate or depopulate the booklet table to reflect change in booklet support
+  // for the node type
+  $type = $form_state['values']['type'];
+  if ($form_state['values']['booklet_enabled'] != variable_get('booklet_enabled_'. $type, 0)) {
+    if ($form_state['values']['booklet_enabled']) {
+      db_query('INSERT IGNORE INTO {booklet} (nid, booklet_nid, weight) SELECT nid, nid, 0 FROM {node} WHERE type = \'%s\'', $type);
+      db_query('INSERT IGNORE INTO {booklet_count} (booklet_nid, count) SELECT nid, 1 FROM {node} WHERE type = \'%s\'', $type);
+    }
+    else {
+      db_query('DELETE FROM {booklet} WHERE nid IN (SELECT nid FROM {node} WHERE type = \'%s\')', $type);
+      db_query('DELETE FROM {booklet_count} WHERE booklet_nid IN (SELECT nid FROM {node} WHERE type = \'%s\')', $type);
+    }
+  }
+}
+
+
+/*
+ * implementation of hook_help
+ */
+function booklet_help($path, $arg) {
+  switch ($path) {
+  
+    case 'node/%/arrange-booklet':
+      $help = '<p>' . t('Drag the items up and down down to arrange the items, then save your changes.') . '</p>' ;
+      if (variable_get('booklet_fix_anchor', 0)) {
+        $help .= '<p>' . t(' Note: The first item in the booklet cannot be changed.') . '</p>';
+      }
+      return $help;
+      
+    case 'admin/help#booklet':
+    
+      $output = '<p>' . t('The Booklet module allows content creators to make linear lists of nodes.  A booket is somewhat similar to a book from Drupal core, except that the nodes are assembled into a flat list rather than a hierarchy.  ');
+      $output .= t('Nodes can be appended to a booklet by clicking a "Append new &lt;content type&gt;..." link at the bottom of a node page.   Booklets can be arranged into a different order by clicking the "arrange" tab available on the first page of a booklet.  ');
+      $output .=  t('Note that these features are abailable only to users that have permission to edit the first node in the booklet.  A block is available to show all the nodes in the currently viewed booklet, and a navigation section (e.g. previous/next links) is added to the display of each node') . '</p>';
+      $output .= '<p>' . t('Before you can create booklets, you must enable booklets for a content type.   Go to the <a href="@content-types-link">Content Types page</a> and in the "workflow settings" section, select "enable" for the Booklet option.  ',  array('@content-types-link' => url('admin/content/types')) );
+      $output .= t('To enable the Booklet navigation block go to the <a href="@blocks-link">Blocks Administration page</a>.', array('@blocks-link' => url('admin/build/block'))) . '</p>';
+      
+      if (module_exists('views') && module_exists('booklet_views')) {
+        $output .= t('Booklet supports Views 2.  Enable booklet_views in the <a href="@views-link">Views Administration page</a> to see how make views that access booklet data.', array('@views-link' => url('admin/build/views'))) . '</p>';
+      }
+      else {
+        $output .= '<p>' . t('Install and enable the Views 2 module and the booklet_views module to have access to booklet data through views.') . '</p>';
+      }
+
+      return $output;
+  }
+}
+
+
+/*****
+ * Token Support
+ *****/
+
+ 
+/**
+ * Implementation of hook_token_list()
+ */
+function booklet_token_list($type = 'all') {
+  if ($type == 'node' || $type == 'all') {
+    $tokens['node']['anchor-title'] = t('The title of the first node in the node\'s booklet, or empty if it is the first node.');
+    return $tokens;
+  }
+}
+
+
+/**
+ * Implementation of hook_token_values()
+ */
+function booklet_token_values($type, $object = NULL, $options = array()) {
+  if ($type == 'node') {
+    $tokens['anchor-title'] = NULL;
+    $node = node_load($object->nid);
+    if (!empty($node->booklet['items']) && !$node->booklet['isanchor']) {
+      $tokens['anchor-title'] = $node->booklet['items'][0]['title'];
+    }
+    return $tokens;
+  }
+}
+
+
+/*******
+ * Helper functions
+ *********/
+
+/*
+ * Get the nid of the anchor of a node.  Just returns the node itself if it is not part of a booklet.
+ *   Parameter: $node   a node object OR a nid integer
+ *   Returns:   an integer node ID
+ */
+function _booklet_get_anchor($node) {
+  if (is_integer($node)) {
+    $node = node_load($node);
+  }
+  if (empty($node->booklet)) {
+    return $node->nid;
+  }
+  else {
+    $node->booklet['booklet'];
+  }
+}
+ 
+
+ /*
+ *   helper function to normalize weights in an array so that the top weight is 0,
+ *    then following nodes are 1,2,...
+ * @param $arr
+ *   Array to normalize, nid => weight, e.g. $arr[73] = weight of node 73
+ * @return
+ *   The nid of the top node (new weight = 0)
+ */
+function booklet_normalize_weights(&$node_weights) {
+  $idx = 0;
+  asort($node_weights);
+  foreach ($node_weights as $nid => $weight) {
+    $node_weights[$nid] = $idx++;
+  }
+  reset($node_weights);
+  return key($node_weights);
+}
+
+
+/*
+ * Get a title of a node in a booklet that a node belogs to.
+ *
+ *   $node  a node with it's booklet info loaded,
+ *   $nid   a nid of a node in the booklet
+ *
+ * returns: The title of the node, or NULL of the user has no view access
+ *
+ */
+function booklet_get_node_title($node, $nid) {
+  if (empty($node->booklet['items'])) {
+    return NULL;
+  }
+  foreach ($node->booklet['items'] as $item) {
+    if ($item['nid'] == $nid) {
+      return $item['title'];
+    }
+  }
+}
+
+
+/*
+ * (optionally) rebuild the the aliases for all the nodes in an an array.
+ * @param $nids
+ *    An array, where the values are the nid of the nodes for which to rebuild aliases.
+ */
+function booklet_rebuild_aliases($nids) {
+  if (module_exists('pathauto') && variable_get('booklet_rebuild_aliases', 0)) {
+    // Force rebuild the booklet data for all the nodes, because it's likely stale.  
+    node_load(1, NULL, TRUE); // don't care about value.  Just clear cache.
+    pathauto_node_operations_update($nids);
+  }
+}
+
+
+/*
+ *  For a given node, check to see if booklets are enabled for it's type
+ */
+function _booklet_enabled($node) {
+  return variable_get('booklet_enabled_'. $node->type, FALSE);
+}
+
+
+/*
+ * Utility Function to execute a function for all nodes in a booklet.
+ *
+ *   $nid       nid of any node in the booklet
+ *   $callback  callback function with signature hook_booklet_do($nid)
+ *
+ */
+function booklet_do_for_all($nid, $callback) {
+  static $running = FALSE; 
+  
+  if ($running) {
+    return;
+  }
+  $running = TRUE;
+  
+  $node = node_load($nid);
+  if (!empty($node->booklet)) {
+    foreach($node->booklet['items'] as $item) {
+      $callback($item['nid']);
+    }
+  }
+
+  $running = FALSE;
+
+}

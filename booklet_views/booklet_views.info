@@ -1,0 +1,7 @@
+; $Id$
+name = Booklet views
+description = "Integrates booklet with views"
+dependencies[] = booklet
+dependencies[] = views
+core = 6.x
+package = "Other"

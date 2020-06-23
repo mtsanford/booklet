@@ -1,0 +1,16 @@
+/* $Id$ */
+
+.notdraggable a.nottabledrag-handle {
+  cursor: default;
+  float: left; /* LTR */
+  height: 1.7em;
+  margin: -0.4em 0 -0.4em -0.5em; /* LTR */
+  padding: 0.42em 1.5em 0.42em 0.5em; /* LTR */
+  text-decoration: none;
+}
+a.nottabledrag-handle .handle {
+  margin-top: 4px;
+  height: 13px;
+  width: 13px;
+  background: url(notdraggable.png) no-repeat 0 0;
+}

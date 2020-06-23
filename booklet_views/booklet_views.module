@@ -1,0 +1,18 @@
+<?php
+// $Id$
+/**
+ * @file
+ * Booklet views integration
+ * @author Mark Sanford http://drupal.org/user/191578
+ */
+
+/**
+ *  Implementation of hook_views_api().
+ */
+function booklet_views_views_api() {
+  return array(
+    'api' => 2,
+    'path' => drupal_get_path('module', 'booklet_views'),
+  );
+}
+
